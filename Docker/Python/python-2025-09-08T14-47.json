@@ -1,0 +1,19 @@
+{
+  "schema-version": "0.0.1",
+  "results": {
+    "tool": "pytest",
+    "summary": {
+      "services": 1,
+      "service": "comprehend",
+      "tests": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "pending": 0,
+      "other": 0,
+      "start": 1757342847493,
+      "stop": 1757342848027
+    },
+    "tests": []
+  }
+}

@@ -1,0 +1,259 @@
+
+This will run Java Docker 
+1 - docker build --quiet -t java-v2-tests .
+
+2 - docker run --rm -it -v "C:/Users/scmacdon/.aws:/root/.aws" -e AWS_REGION=us-east-1 java-v2-tests
+
+
+This will run Kotlin Docker 
+1 - docker build -t kotlin-tests .
+
+2 - docker run --rm -it -v "C:/Users/scmacdon/.aws:/root/.aws" -e AWS_REGION=us-east-1 kotlin-tests
+
+
+This will run NET Docker 
+1 - docker build -t net-tests .
+
+2 - docker run --rm -it -v "C:/Users/scmacdon/.aws:/root/.aws" -e AWS_REGION=us-east-1 net-tests
+
+
+
+VARIOUS CLI commaands
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 814548047983.dkr.ecr.us-east-1.amazonaws.com
+
+docker tag java-v2-tests:latest 814548047983.dkr.ecr.us-east-1.amazonaws.com/java-v2-tests:latest
+
+docker push 814548047983.dkr.ecr.us-east-1.amazonaws.com/java-v2-tests:latest
+
+
+aws ecs run-task --cluster java-v2-tests-cluster --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[subnet-09a168cbb87768d6a],assignPublicIp=ENABLED}" --task-definition java-v2-tests-task
+
+
+aws ecr describe-images --repository-name java-v2-tests --region us-east-1
+
+
+814548047983.dkr.ecr.us-east-1.amazonaws.com/my-fargate-app:latest
+
+aws ecr describe-images --repository-name java-v2-tests --image-ids imageTag=latest --region us-east-1
+
+aws ecs describe-tasks --cluster java-v2-tests-cluster --tasks f23b1c362ee043bea4797210df8720b2
+
+
+HERE IS CLI command to kick off my Java ECS tester 
+
+aws ecs run-task \
+  --cluster java-v2-tests-cluster \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-6e05ed4f],assignPublicIp=ENABLED}" \
+  --task-definition java-v2-tests-task:1 \
+  --overrides '{
+    "containerOverrides": [
+      {
+        "name": "java-v2-tests-container",
+        "memory": 2048
+      }
+    ]
+  }'
+
+  Check logs 
+
+  aws logs get-log-events --log-group-name "/ecs/java-v2-tests" --log-stream-name "ecs/java-v2-tests-container/55b1b2cafd124b9b9a53c51dd966e6ce" --region us-east-1 --limit 20
+
+
+aws ecs describe-tasks --cluster java-v2-tests-cluster --tasks 975098fd327c40faa4ad0a73dd1a0347 --region us-east-1
+
+ws dynamodb update-table \
+    --table-name TestRunSummaries \
+    --attribute-definitions AttributeName=Language,AttributeType=S \
+    --global-secondary-index-updates \
+        "[{\"Create\":{\"IndexName\":\"YourGSIName\",\"KeySchema\":[{\"AttributeName\":\"YourGSIKeyName\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"ALL\"},\"ProvisionedThroughput\":{\"ReadCapacityUnits\":5,\"WriteCapacityUnits\":5}}}]"
+
+
+"{\"RunId\":\"1746303470\",\"ServicesTested\":53,\"TotalPassed\":287,\"TotalFailed\":14,\"TotalSkipped\":1,\"TotalTime\":\"2 hours 30 minutes\",\"PassRate\":\"95.35%\"}"
+
+
+API Gateway to make this call work 
+
+
+https://4mjmf7v6c2.execute-api.us-east-1.amazonaws.com/Weathertopstage/mydata?lang=Kotlin
+
+
+Since your Lambda function now uses APIGatewayProxyRequestEvent, you need to simulate an API Gateway event in the test interface. Here's a sample test event you can use in the AWS Lambda Console:
+
+✅ Sample Test Event JSON
+json
+Copy
+Edit
+{
+  "resource": "/mydata",
+  "path": "/mydata",
+  "httpMethod": "GET",
+  "headers": {
+    "accept": "application/json"
+  },
+  "queryStringParameters": {
+    "lang": "Kotlin"
+  },
+  "requestContext": {
+    "resourcePath": "/mydata",
+    "httpMethod": "GET",
+    "stage": "Weathertopstage"
+  },
+  "pathParameters": null,
+  "stageVariables": null,
+  "body": null,
+  "isBase64Encoded": false
+}
+
+
+
+Here’s a comprehensive step-by-step guide on how we made your AWS Lambda function work with API Gateway (REST API) using a query string parameter (lang=Kotlin) for a GET request that invokes a Lambda function:
+
+✅ Goal
+To invoke a Lambda function using an HTTP GET request like:
+
+
+https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/mydata?lang=Kotlin
+This should call a Lambda function (weathertopData) and pass "lang": "Kotlin" as input, returning results from DynamoDB or other logic.
+
+🧱 PART 1: Lambda Handler (Java)
+
+When you're building an AWS Lambda function that is triggered by API Gateway (using the REST API with Lambda Proxy Integration), your handler should use:
+
+Update your handler class to use API Gateway proxy event types:
+
+import com.amazonaws.services.lambda.runtime.Context;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.LambdaLogger;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
+import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
+
+import java.util.Map;
+
+public class Handler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
+
+    @Override
+    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent event, Context context) {
+        LambdaLogger logger = context.getLogger();
+
+        Map<String, String> queryParams = event.getQueryStringParameters();
+        String lang = (queryParams != null) ? queryParams.get("lang") : null;
+
+        if (lang == null || lang.isEmpty()) {
+            return new APIGatewayProxyResponseEvent()
+                    .withStatusCode(400)
+                    .withBody("{\"error\": \"Missing 'lang' query parameter\"}");
+        }
+
+        logger.log("Getting test results for: " + lang);
+
+        Stats stat = new Stats(); // Your business logic class
+        String json = stat.getDataFromTable(lang);
+
+        return new APIGatewayProxyResponseEvent()
+                .withStatusCode(200)
+                .withBody(json);
+    }
+}
+2. Add Maven Dependencies
+Ensure this is in your pom.xml:
+
+<dependency>
+    <groupId>com.amazonaws</groupId>
+    <artifactId>aws-lambda-java-core</artifactId>
+    <version>1.2.1</version>
+</dependency>
+<dependency>
+    <groupId>com.amazonaws</groupId>
+    <artifactId>aws-lambda-java-events</artifactId>
+    <version>3.11.0</version>
+</dependency>
+
+
+🌐 PART 2: API Gateway (REST API)
+1. Create or Select a REST API
+In the AWS API Gateway Console:
+
+Choose Create API > REST API (not HTTP API).
+
+Name: WeathertopAPI
+
+Endpoint Type: Regional
+
+2. Create Resource Path
+In Resources, choose Actions > Create Resource
+
+Resource Name: mydata
+
+Resource Path: /mydata
+
+3. Create GET Method
+Select /mydata, then click Actions > Create Method > GET
+
+Integration type: Lambda Function
+
+Check “Use Lambda Proxy Integration” ✅
+
+Lambda Function: weathertopData (your deployed Lambda function)
+
+4. Deploy the API
+Choose Actions > Deploy API
+
+Deployment stage: Weathertopstage (or create new)
+
+This will create a URL like:
+
+
+
+https://<api-id>.execute-api.us-east-1.amazonaws.com/Weathertopstage/mydata
+
+🧪 PART 3: Testing
+1. From API Gateway (Test Console)
+Go to /mydata > GET
+
+Click Test
+
+Under Query Strings, enter:
+
+
+lang=Kotlin
+You should receive a successful response or a useful error.
+
+2. From Browser or CURL
+Try this:
+
+
+curl "https://4mjmf7v6c2.execute-api.us-east-1.amazonaws.com/Weathertopstage/mydata?lang=Java"
+If everything is correct, this should return your JSON response from Lambda.
+
+	'{"RunId":"043243d5-0efb-41ea-a46c-18b3969db76e","ServicesTested":70,"TotalPassed":420,"TotalFailed":9,"TotalSkipped":0,"TotalTime":"7 hours 21 minutes","PassRate":"97.90%"}'
+
+
+🧪 Lambda Console Test Event
+To test directly in the Lambda Console, use this mock event:
+
+{
+  "resource": "/mydata",
+  "path": "/mydata",
+  "httpMethod": "GET",
+  "queryStringParameters": {
+    "lang": "Kotlin"
+  },
+  "headers": {
+    "accept": "application/json"
+  },
+  "requestContext": {
+    "stage": "Weathertopstage"
+  },
+  "body": null,
+  "isBase64Encoded": false
+}
+🧠 Summary
+Component	Configuration
+Lambda Handler	Implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent>
+API Gateway Method	GET on /mydata with Lambda Proxy Integration enabled
+Query Parameter	lang=Kotlin passed in query string
+Test URL	https://<api-id>.execute-api.<region>.amazonaws.com/Weathertopstage/mydata?lang=Kotlin
+Lambda Test Event	Simulates query string via queryStringParameters
+
+

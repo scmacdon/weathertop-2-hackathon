@@ -1,0 +1,28 @@
+{
+  "schema-version": "0.0.1",
+  "results": {
+    "tool": "rust",
+    "summary": {
+      "services": 57,
+      "tests": 54,
+      "passed": 53,
+      "failed": 1,
+      "start_time": 1758557485082,
+      "stop_time": 1758557798619
+    },
+    "tests": [
+      {
+        "service": "lambda",
+        "test_name": "test_1",
+        "status": "failed",
+        "message": "test actions::test::test_serialize ... FAILED"
+      },
+      {
+        "service": "lambda",
+        "test_name": "result:",
+        "status": "failed",
+        "message": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      }
+    ]
+  }
+}

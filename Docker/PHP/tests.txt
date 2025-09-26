@@ -1,0 +1,6 @@
+# 1. Build the image (quietly, tag it php-tests)
+docker build --quiet -t php-tests .
+
+# 2. Run the container, mounting your AWS credentials and passing AWS region
+
+docker run --rm -it  -v "C:/Users/scmacdon/.aws:/root/.aws"  -e AWS_REGION=us-east-1  php-tests

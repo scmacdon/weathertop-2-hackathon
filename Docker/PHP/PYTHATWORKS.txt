@@ -1,0 +1,430 @@
+importimport os
+import subprocess
+import json
+import time
+import shutil
+import boto3
+import re
+from datetime import datetime
+
+# === CONFIG ===
+REPO_URL = "https://github.com/awsdocs/aws-doc-sdk-examples.git"
+CLONE_DIR = "/app/aws-doc-sdk-examples"
+PHP_TEST_DIRS = {
+    "KMS": "php/example_code/kms/"
+}
+S3_BUCKET_NAME = "weathertop2"
+
+# === UTILS ===
+def run_command(command, cwd=None):
+    env = os.environ.copy()
+
+    # Detect ECS/Fargate
+    in_fargate = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" in env or "AWS_CONTAINER_CREDENTIALS_FULL_URI" in env
+    if in_fargate:
+        for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"]:
+            env.pop(key, None)
+        env["AWS_SHARED_CREDENTIALS_FILE"] = "/nonexistent"
+        env["AWS_REGION"] = env.get("AWS_REGION", "us-east-1")
+        print("✅ ECS/Fargate detected. Using task role credentials.")
+    else:
+        print("ℹ️ Using existing environment credentials if available.")
+
+    env["HOME"] = env.get("HOME", "/root")
+
+    try:
+        print(f"Running command: {' '.join(command)}")
+        result = subprocess.run(command, cwd=cwd, env=env, check=True, text=True, capture_output=True)
+        return result.returncode, result.stdout
+    except subprocess.CalledProcessError as e:
+        return e.returncode, (e.stdout or "") + "\n" + (e.stderr or "")
+
+def parse_phpunit_output(output):
+    passed = failed = skipped = 0
+    match_ok = re.search(r"OK\s*\((\d+)\s+tests?", output)
+    if match_ok:
+        passed = int(match_ok.group(1))
+        return passed, 0, 0
+
+    match_summary = re.search(
+        r"Tests:\s*(\d+),.*Failures:\s*(\d+),.*Skipped:\s*(\d+)", output, re.DOTALL
+    )
+    if match_summary:
+        total = int(match_summary.group(1))
+        failed = int(match_summary.group(2))
+        skipped = int(match_summary.group(3))
+        passed = total - failed - skipped
+        return passed, failed, skipped
+
+    if "FAILURES!" in output:
+        failed_count = len(re.findall(r"\d+\) ", output))
+        return 0, failed_count, 0
+
+    print("⚠️ Could not parse PHPUnit output correctly")
+    return 0, 0, 0
+
+def upload_to_s3(local_file, bucket_name, s3_key):
+    s3 = boto3.client("s3")
+    try:
+        s3.upload_file(local_file, bucket_name, s3_key)
+        print(f"✅ Uploaded {local_file} to S3 bucket: {bucket_name}/{s3_key}")
+    except Exception as e:
+        print(f"❌ Failed to upload to S3: {e}")
+
+# === MAIN ===
+def main():
+    if os.path.exists(CLONE_DIR):
+        print(f"🧹 Removing existing repo directory: {CLONE_DIR}")
+        shutil.rmtree(CLONE_DIR)
+
+    print(f"📥 Cloning repo: {REPO_URL}")
+    returncode, output = run_command(["git", "clone", REPO_URL, CLONE_DIR])
+    if returncode != 0:
+        print("❌ Failed to clone repo.")
+        print(output)
+        return
+
+    total_passed = total_failed = total_skipped = 0
+    services_tested_count = 0  # <- Use a counter instead of a list
+
+    for service_name, service_root in PHP_TEST_DIRS.items():
+        php_root_abs = os.path.join(CLONE_DIR, service_root)
+        php_test_abs_path = os.path.join(php_root_abs, "tests")
+
+        if not os.path.exists(php_test_abs_path):
+            print(f"⚠️ PHP test directory not found: {php_test_abs_path}, skipping {service_name}")
+            continue
+
+        services_tested_count += 1  # Increment counter
+
+        # Install Composer dependencies
+        composer_json_path = os.path.join(php_root_abs, "composer.json")
+        if os.path.exists(composer_json_path):
+            print(f"📦 Installing PHP dependencies in {php_root_abs}...")
+            returncode, output = run_command(
+                ["composer", "install", "--no-interaction", "--prefer-dist", "--no-progress"],
+                cwd=php_root_abs
+            )
+            if returncode != 0:
+                print("❌ Composer install failed.")
+                print(output)
+                continue
+
+        # Find PHPUnit
+        phpunit_bin_vendor = os.path.join(php_root_abs, "vendor/bin/phpunit")
+        phpunit_bin_global = "/usr/local/bin/phpunit"
+        phpunit_bin = phpunit_bin_vendor if os.path.isfile(phpunit_bin_vendor) else phpunit_bin_global
+        if not os.path.isfile(phpunit_bin):
+            print(f"❌ PHPUnit not found for service: {service_name}, skipping")
+            continue
+
+        # Create bootstrap_runtime.php
+        bootstrap_file = os.path.join(php_test_abs_path, "bootstrap_runtime.php")
+        with open(bootstrap_file, "w", encoding="utf-8") as f:
+            f.write("""<?php
+require_once __DIR__ . '/../vendor/autoload.php';
+
+// Autoload Kms namespace classes
+spl_autoload_register(function ($class) {
+    $prefix = 'Kms\\\\';
+    $base_dir = __DIR__ . '/../';
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) return;
+    $relative_class = substr($class, $len);
+    $file = $base_dir . str_replace('\\\\', '/', $relative_class) . '.php';
+    if (file_exists($file)) require $file;
+});
+""")
+
+        # Run  PHPUnit with bootstrap
+        phpunit_command = [phpunit_bin, "--colors=never", "--bootstrap", bootstrap_file]
+
+        # Collect test files
+        test_files = [
+            os.path.join("tests", f)
+            for f in os.listdir(php_test_abs_path)
+            if f.endswith(".php") and f != "bootstrap_runtime.php"
+        ]
+        if test_files:
+            phpunit_command.extend(test_files)
+        else:
+            print(f"⚠️ No PHP test files found in {php_test_abs_path}")
+
+        returncode, output = run_command(phpunit_command, cwd=php_root_abs)
+        print(f"PHPUnit exit code: {returncode}")
+        print(f"PHPUnit output:\n{output}")
+
+        passed, failed, skipped = parse_phpunit_output(output)
+        print(f"✅ {service_name}: Passed={passed}, Failed={failed}, Skipped={skipped}")
+
+        total_passed += passed
+        total_failed += failed
+        total_skipped += skipped
+
+    # Summary
+    total_tests = total_passed + total_failed + total_skipped
+    pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+
+    print("\n===== ✅ Final Test Summary =====")
+    print(f"Services Tested: {services_tested_count}")
+    print(f"Total Tests: {total_tests}")
+    print(f"Passed: {total_passed}")
+    print(f"Failed: {total_failed}")
+    print(f"Skipped: {total_skipped}")
+    print(f"Pass Rate: {pass_rate:.2f}%")
+
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H-%M")
+    filename = f"php-{now}.json"
+    schema = {
+        "schema-version": "0.0.1",
+        "results": {
+            "tool": "phpunit",
+            "summary": {
+                "services": services_tested_count,  # <-- now just a number
+                "tests": total_tests,
+                "passed": total_passed,
+                "failed": total_failed,
+                "skipped": total_skipped,
+                "pass_rate": round(pass_rate, 2),
+                "start_time": int(time.time() * 1000),
+                "stop_time": int(time.time() * 1000)
+            },
+            "tests": []
+        }
+    }
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(schema, f, indent=2)
+    print(f"📁 Wrote schema to local file: {filename}")
+
+    upload_to_s3(filename, S3_BUCKET_NAME, filename)
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+****************************************************
+
+import os
+import subprocess
+import json
+import time
+import shutil
+import boto3
+import re
+from datetime import datetime
+
+# === CONFIG ===
+REPO_URL = "https://github.com/awsdocs/aws-doc-sdk-examples.git"
+CLONE_DIR = "/app/aws-doc-sdk-examples"
+PHP_TEST_DIRS = {
+    "KMS": "php/example_code/kms/",
+    "IAM": "php/example_code/iam/",
+    "GLUE": "php/example_code/glue/"
+}
+S3_BUCKET_NAME = "weathertop2"
+
+# === UTILS ===
+def run_command(command, cwd=None):
+    env = os.environ.copy()
+
+    # Detect ECS/Fargate
+    in_fargate = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" in env or "AWS_CONTAINER_CREDENTIALS_FULL_URI" in env
+    if in_fargate:
+        for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"]:
+            env.pop(key, None)
+        env["AWS_SHARED_CREDENTIALS_FILE"] = "/nonexistent"
+        env["AWS_REGION"] = env.get("AWS_REGION", "us-east-1")
+        print("✅ ECS/Fargate detected. Using task role credentials.")
+    else:
+        print("ℹ️ Using existing environment credentials if available.")
+
+    env["HOME"] = env.get("HOME", "/root")
+
+    try:
+        print(f"Running command: {' '.join(command)}")
+        result = subprocess.run(command, cwd=cwd, env=env, check=True, text=True, capture_output=True)
+        return result.returncode, result.stdout
+    except subprocess.CalledProcessError as e:
+        return e.returncode, (e.stdout or "") + "\n" + (e.stderr or "")
+
+def parse_phpunit_output(output):
+    passed = failed = skipped = 0
+    match_ok = re.search(r"OK\s*\((\d+)\s+tests?", output)
+    if match_ok:
+        passed = int(match_ok.group(1))
+        return passed, 0, 0
+
+    match_summary = re.search(
+        r"Tests:\s*(\d+),.*Failures:\s*(\d+),.*Skipped:\s*(\d+)", output, re.DOTALL
+    )
+    if match_summary:
+        total = int(match_summary.group(1))
+        failed = int(match_summary.group(2))
+        skipped = int(match_summary.group(3))
+        passed = total - failed - skipped
+        return passed, failed, skipped
+
+    if "FAILURES!" in output:
+        failed_count = len(re.findall(r"\d+\) ", output))
+        return 0, failed_count, 0
+
+    print("⚠️ Could not parse PHPUnit output correctly")
+    return 0, 0, 0
+
+def upload_to_s3(local_file, bucket_name, s3_key):
+    s3 = boto3.client("s3")
+    try:
+        s3.upload_file(local_file, bucket_name, s3_key)
+        print(f"✅ Uploaded {local_file} to S3 bucket: {bucket_name}/{s3_key}")
+    except Exception as e:
+        print(f"❌ Failed to upload to S3: {e}")
+
+# === MAIN ===
+def main():
+    # Clean previous clone
+    if os.path.exists(CLONE_DIR):
+        print(f"🧹 Removing existing repo directory: {CLONE_DIR}")
+        shutil.rmtree(CLONE_DIR)
+
+    # Clone repo
+    print(f"📥 Cloning repo: {REPO_URL}")
+    returncode, output = run_command(["git", "clone", REPO_URL, CLONE_DIR])
+    if returncode != 0:
+        print("❌ Failed to clone repo.")
+        print(output)
+        return
+
+    total_passed = total_failed = total_skipped = 0
+    services_tested = []
+
+    for service_name, service_root in PHP_TEST_DIRS.items():
+        php_root_abs = os.path.join(CLONE_DIR, service_root)
+        php_test_abs_path = os.path.join(php_root_abs, "tests")
+
+        if not os.path.exists(php_test_abs_path):
+            print(f"⚠️ PHP test directory not found: {php_test_abs_path}, skipping {service_name}")
+            continue
+
+        # Composer install if composer.json exists
+        composer_json_path = os.path.join(php_root_abs, "composer.json")
+        if os.path.exists(composer_json_path):
+            print(f"📦 Installing PHP dependencies in {php_root_abs}...")
+            returncode, output = run_command(
+                ["composer", "install", "--no-interaction", "--prefer-dist", "--no-progress"],
+                cwd=php_root_abs
+            )
+            if returncode != 0:
+                print("❌ Composer install failed.")
+                print(output)
+                continue
+
+        # Locate PHPUnit
+        phpunit_bin_vendor = os.path.join(php_root_abs, "vendor/bin/phpunit")
+        phpunit_bin_global = "/usr/local/bin/phpunit"
+        phpunit_bin = phpunit_bin_vendor if os.path.isfile(phpunit_bin_vendor) else phpunit_bin_global
+        if not os.path.isfile(phpunit_bin):
+            print(f"❌ PHPUnit not found for service: {service_name}, skipping")
+            continue
+
+        # Create bootstrap_runtime.php
+        bootstrap_file = os.path.join(php_test_abs_path, "bootstrap_runtime.php")
+        with open(bootstrap_file, "w", encoding="utf-8") as f:
+            f.write(f"""<?php
+require_once __DIR__ . '/../vendor/autoload.php';
+
+$service_dirs = [
+    __DIR__ . '/..',                // current service
+    __DIR__ . '/../../kms',         // KMS
+    __DIR__ . '/../../iam',         // IAM
+    __DIR__ . '/../../example_code/glue' // Glue
+];
+
+spl_autoload_register(function($class) use ($service_dirs) {{
+    foreach ($service_dirs as $base_dir) {{
+        $real_base = realpath($base_dir);
+        if (!$real_base) continue;
+        $file = $real_base . '/' . str_replace('\\\\', '/', $class) . '.php';
+        if (file_exists($file)) {{
+            require $file;
+            return;
+        }}
+    }}
+}});
+""")
+
+        # Collect PHP test files
+        test_files = [
+            os.path.join("tests", f)
+            for f in os.listdir(php_test_abs_path)
+            if f.endswith(".php") and f != "bootstrap_runtime.php"
+        ]
+        if not test_files:
+            print(f"⚠️ No PHP test files found in {php_test_abs_path}, skipping service {service_name}")
+            continue
+
+        services_tested.append(service_name)
+
+        # Run PHPUnit
+        phpunit_command = [phpunit_bin, "--colors=never", "--bootstrap", bootstrap_file] + test_files
+        returncode, output = run_command(phpunit_command, cwd=php_root_abs)
+        print(f"PHPUnit exit code: {returncode}")
+        print(f"PHPUnit output:\n{output}")
+
+        passed, failed, skipped = parse_phpunit_output(output)
+        print(f"✅ {service_name}: Passed={passed}, Failed={failed}, Skipped={skipped}")
+
+        total_passed += passed
+        total_failed += failed
+        total_skipped += skipped
+
+    # === Summary ===
+    total_tests = total_passed + total_failed + total_skipped
+    pass_rate = (total_passed / total_tests * 100) if total_tests else 0
+
+    print("\n===== ✅ Final Test Summary =====")
+    print(f"Services Tested: {len(services_tested)} -> {services_tested}")
+    print(f"Total Tests: {total_tests}")
+    print(f"Passed: {total_passed}")
+    print(f"Failed: {total_failed}")
+    print(f"Skipped: {total_skipped}")
+    print(f"Pass Rate: {pass_rate:.2f}%")
+
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H-%M")
+    filename = f"php-{now}.json"
+    schema = {
+        "schema-version": "0.0.1",
+        "results": {
+            "tool": "phpunit",
+            "summary": {
+                "services_tested": services_tested,
+                "tests": total_tests,
+                "passed": total_passed,
+                "failed": total_failed,
+                "skipped": total_skipped,
+                "pass_rate": round(pass_rate, 2),
+                "start_time": int(time.time() * 1000),
+                "stop_time": int(time.time() * 1000)
+            },
+            "tests": []
+        }
+    }
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(schema, f, indent=2)
+    print(f"📁 Wrote schema to local file: {filename}")
+
+    upload_to_s3(filename, S3_BUCKET_NAME, filename)
+
+if __name__ == "__main__":
+    main()

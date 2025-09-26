@@ -1,0 +1,17 @@
+{
+  "schema-version": "0.0.1",
+  "results": {
+    "tool": "pytest",
+    "summary": {
+      "services": 1,
+      "tests": 3,
+      "passed": 3,
+      "failed": 0,
+      "pending": 0,
+      "skipped": 0,
+      "other": 0
+    },
+    "tests": []
+  },
+  "runid": "python-2025-09-03T09-32"
+}

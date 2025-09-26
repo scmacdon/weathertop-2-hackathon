@@ -1,0 +1,8 @@
+
+
+This will run Kotlin Docker 
+1 - docker build -t kotlin-tests .
+
+2 - docker run --rm -it -v "C:/Users/scmacdon/.aws:/root/.aws" -e AWS_REGION=us-east-1 kotlin-tests
+
+

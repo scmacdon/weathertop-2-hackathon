@@ -1,0 +1,37 @@
+{
+  "schema-version": "0.0.1",
+  "results": {
+    "tool": "JUnit",
+    "summary": {
+      "services": 3,
+      "tests": 3,
+      "passed": 0,
+      "failed": 3,
+      "start_time": 1752873945108,
+      "stop_time": 1752874172495
+    },
+    "tests": [
+      {
+        "name": "test 1",
+        "status": "failed",
+        "duration": 1,
+        "message": "comprehend",
+        "log": "at software.amazon.awssdk.core.internal.http.pipeline.stages.ExecutionFailureExceptionReportingStage.execute(ExecutionFailureExceptionReportingStage.java:26)"
+      },
+      {
+        "name": "test 2",
+        "status": "failed",
+        "duration": 2,
+        "message": "iotsitewise",
+        "log": "at software.amazon.awssdk.core.internal.http.pipeline.stages.utils.RetryableStageHelper.retryPolicyDisallowedRetryException(RetryableStageHelper.java:168)"
+      },
+      {
+        "name": "test 3",
+        "status": "failed",
+        "duration": 3,
+        "message": "mediaconvert",
+        "log": "at software.amazon.awssdk.core.internal.http.pipeline.stages.ExecutionFailureExceptionReportingStage.execute(ExecutionFailureExceptionReportingStage.java:26)"
+      }
+    ]
+  }
+}

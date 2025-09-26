@@ -1,0 +1,255 @@
+Guide: Deploying a Docker Container with AWS ECS Fargate
+This guide will walk you through the steps to:
+
+Build and deploy your Docker container.
+
+Configure networking for ECS Fargate.
+
+Ensure IAM roles are correctly set up.
+
+Verify container connectivity and security.
+
+Step 1: Build and Prepare Docker Container Locally
+First, you need to build your Docker container locally with the necessary AWS credentials mounted, then push it to Amazon ECR.
+
+Build Docker Image
+You can use the following command to build your Docker image locally:
+
+bash
+Copy
+Edit
+docker build --quiet -t java-v2-tests .
+This will create the Docker image java-v2-tests. The --quiet flag suppresses the build logs.
+
+Run Docker Image Locally (with AWS Credentials Mounted)
+To run the Docker image locally with AWS credentials mounted, use:
+
+bash
+Copy
+Edit
+docker run --rm -it -v "C:/Users/scmacdon/.aws:/root/.aws" -e AWS_REGION=us-east-1 java-v2-tests
+This mounts your local AWS credentials into the container and sets the region to us-east-1.
+
+Push Docker Image to Amazon ECR
+Login to ECR (if not already authenticated):
+
+bash
+Copy
+Edit
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+Create a repository in ECR (if it doesn't exist):
+
+bash
+Copy
+Edit
+aws ecr create-repository --repository-name java-v2-tests
+Tag the image:
+
+bash
+Copy
+Edit
+docker tag java-v2-tests:latest <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/java-v2-tests:latest
+Push the image to ECR:
+
+bash
+Copy
+Edit
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/java-v2-tests:latest
+Step 2: Set Up Networking in AWS for ECS Fargate
+You need to ensure that your ECS task can access the necessary resources, such as ECR, the internet, or other AWS services. The following steps will guide you through configuring the VPC, subnets, route tables, and Internet Gateway.
+
+1. Check Subnet Configuration
+Ensure the subnet where your ECS tasks will run is in a VPC with proper internet access.
+
+Get your subnet ID:
+
+bash
+Copy
+Edit
+aws ec2 describe-subnets --query "Subnets[*].SubnetId"
+Example output:
+
+Copy
+Edit
+subnet-09a168cbb87768d6a
+Verify Subnet Configuration:
+
+Ensure the subnet has a route to the internet.
+
+If using a private subnet, ensure it has a NAT gateway for outbound internet access.
+
+If using a public subnet, it should have a route to an Internet Gateway.
+
+2. Verify Route Tables
+List Route Tables:
+
+bash
+Copy
+Edit
+aws ec2 describe-route-tables --query "RouteTables[*].RouteTableId"
+Example output:
+
+Copy
+Edit
+rtb-0ffeae4d7395a95d8
+Check Routes for Internet Access:
+
+bash
+Copy
+Edit
+aws ec2 describe-route-tables --route-table-id rtb-0ffeae4d7395a95d8 --query "RouteTables[*].Routes"
+Example output:
+
+json
+Copy
+Edit
+[
+    {
+        "DestinationCidrBlock": "172.16.0.0/16",
+        "GatewayId": "local",
+        "State": "active"
+    }
+]
+If your route table doesn't have an internet gateway route, you'll need to add it.
+
+3. Create an Internet Gateway (if not present)
+If no internet gateway exists, create and attach one to your VPC:
+
+bash
+Copy
+Edit
+aws ec2 create-internet-gateway
+aws ec2 attach-internet-gateway --internet-gateway-id igw-xxxxxxxx --vpc-id vpc-xxxxxxxx
+4. Create a NAT Gateway (for private subnets)
+If you're using a private subnet, you'll need to create a NAT Gateway to allow ECS Fargate tasks to access the internet.
+
+Step 3: Set Up IAM Roles for ECS
+You will need to create an IAM Role for your ECS task that mimics the permissions of your IAM User. This role allows your ECS task to interact with AWS services (e.g., ECR, S3, etc.).
+
+1. Create IAM Task Execution Role
+bash
+Copy
+Edit
+aws iam create-role --role-name ecsTaskExecutionRole --assume-role-policy-document file://ecs-trust-policy.json
+ecs-trust-policy.json:
+
+json
+Copy
+Edit
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+2. Attach Policies to Task Execution Role
+Attach necessary policies to the role. These include access to Amazon ECR (to pull images) and CloudWatch Logs (for logging):
+
+bash
+Copy
+Edit
+aws iam attach-role-policy --role-name ecsTaskExecutionRole --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+3. Create Custom Role for Service Permissions
+If your Java tests need additional permissions, you can create a custom policy with the exact permissions your IAM user has, and attach it to the ECS task execution role.
+
+For example, to mimic IAM user permissions, you could export the IAM policies attached to your user:
+
+bash
+Copy
+Edit
+aws iam list-attached-user-policies --user-name <your-username>
+Then, create a custom policy for your task:
+
+bash
+Copy
+Edit
+aws iam create-policy --policy-name ecsTaskCustomPolicy --policy-document file://ecs-custom-policy.json
+Attach this policy to your ECS role:
+
+bash
+Copy
+Edit
+aws iam attach-role-policy --role-name ecsTaskExecutionRole --policy-arn arn:aws:iam::<your-account-id>:policy/ecsTaskCustomPolicy
+Step 4: Create ECS Task Definition
+Now that you have your Docker image in ECR and IAM roles set up, create the ECS Task Definition.
+
+bash
+Copy
+Edit
+aws ecs register-task-definition \
+  --family java-v2-tests-task \
+  --network-mode awsvpc \
+  --execution-role-arn arn:aws:iam::<your-account-id>:role/ecsTaskExecutionRole \
+  --container-definitions '[{
+    "name": "java-v2-tests-container",
+    "image": "<AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/java-v2-tests:latest",
+    "memory": 512,
+    "cpu": 256,
+    "essential": true,
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/ecs/java-v2-tests",
+        "awslogs-region": "us-east-1",
+        "awslogs-stream-prefix": "java-v2-tests"
+      }
+    }
+  }]'
+Step 5: Run ECS Fargate Task
+Finally, you can start your ECS task with the following command:
+
+bash
+Copy
+Edit
+aws ecs run-task \
+  --cluster java-v2-tests-cluster \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-09a168cbb87768d6a],assignPublicIp=ENABLED}" \
+  --task-definition java-v2-tests-task
+Step 6: Monitor and Debug ECS Task
+View Task Status:
+
+Go to the ECS Console and check the Clusters tab.
+
+Click on your cluster (java-v2-tests-cluster).
+
+Check the Tasks tab for task status (Running/Stopped).
+
+View Task Logs:
+
+In the Task Details section, look for Log Configuration and confirm if CloudWatch Logs are being used.
+
+Go to the CloudWatch Console to view logs related to your container execution.
+
+Check Network Access: If the task fails, confirm it can access the necessary AWS services (like ECR, S3, etc.) and that the subnet and route table are correctly configured.
+
+Step 7: Troubleshooting
+Task in Pending State: Verify VPC/subnet access to the internet and correct IAM permissions.
+
+Container Stops Immediately: Check CloudWatch logs for any errors related to the container execution.
+
+This guide provides you with all the low-level details to configure AWS ECS Fargate, IAM roles, and networking to ensure your Docker container can run your Java tests successfully in the cloud. Let me know if you need any further assistance or clarification!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

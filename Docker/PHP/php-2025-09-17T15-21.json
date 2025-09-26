@@ -1,0 +1,39 @@
+{
+  "schema-version": "0.0.1",
+  "results": {
+    "tool": "phpunit",
+    "summary": {
+      "services": 1,
+      "tests": 3,
+      "passed": 0,
+      "failed": 3,
+      "skipped": 0,
+      "pass_rate": 0.0,
+      "start_time": 1758122506377,
+      "stop_time": 1758122506377
+    },
+    "tests": [
+     {
+        "name": "test 1",
+        "status": "failed",
+        "duration": 0,
+        "message": "S3",
+        "log": "Failed asserting that two arrays are equal.\n--- Expected\n+++ Actual\n@@ @@\n Array (\n-    0 => 1\n-    1 => 2\n-    2 => 3\n )"
+      },
+       {
+        "name": "test 2",
+        "status": "failed",
+        "duration": 0,
+        "message": "S3",
+        "log": "Failed asserting that two arrays are equal.\n--- Expected\n+++ Actual\n@@ @@\n Array (\n-    0 => 1\n-    1 => 2\n-    2 => 3\n )"
+      },
+      {
+        "name": "test 2",
+        "status": "failed",
+        "duration": 0,
+        "message": "S3",
+        "log": "Failed asserting that two arrays are equal.\n--- Expected\n+++ Actual\n@@ @@\n Array (\n-    0 => 1\n-    1 => 2\n-    2 => 3\n )"
+      }
+    ]
+  }
+}
